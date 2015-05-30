@@ -1,0 +1,223 @@
+#!/usr/bin/python3
+import os
+import struct
+import sys
+from open_ext import open_ext
+from crc64 import crc64
+import zlib
+import math
+import argparse
+
+def hash(buffer):
+    if VERSION == 1:
+        return crc32(buffer)
+    else:
+        return crc64(buffer)
+
+VERSION = 2
+GAME_TITLE = "辻堂さんの純愛ロード"
+SCRIPT_HASH = hash(GAME_TITLE.encode('sjis'))
+
+class Table(object):
+    ENTRY_COUNT_HASH = 0x26ACA46E
+
+    def __init__(self):
+        self.entries = []
+
+    def read(self, fh):
+        if VERSION == 1:
+            entry_count = fh.read_u32_be()
+        else:
+            entry_count = fh.read_u32_le()
+        entry_count ^= self.ENTRY_COUNT_HASH
+        for i in range(entry_count):
+            entry = TableEntry()
+            entry.read(fh)
+            self.entries.append(entry)
+
+    def write(self, fh):
+        entry_count = len(self.entries)
+        entry_count ^= self.ENTRY_COUNT_HASH
+        if VERSION == 1:
+            fh.write_u32_be(entry_count)
+        else:
+            fh.write_u32_le(entry_count)
+        for entry in self.entries:
+            entry.write(fh)
+
+    def __len__(self):
+        return 4 + sum([len(entry) for entry in self.entries])
+
+class TableEntry(object):
+    TYPE_PLAIN      = 0
+    TYPE_OBFUSCATED = 1
+    TYPE_COMPRESSED = 2
+
+    def __init__(self):
+        self.type = self.TYPE_PLAIN
+        self.hash = 0
+        self.offset = 0
+        self.size_compressed = 0
+        self.size_original = 0
+
+    def read(self, fh):
+        if VERSION == 1:
+            self.hash = fh.read_u32_be()
+            self.type = fh.read_u8()
+            self.offset = fh.read_u32_be()
+            self.size_compressed = fh.read_u32_be()
+            self.size_original = fh.read_u32_be()
+        else:
+            self.hash = fh.read_u64_le()
+            self.type = fh.read_u8()
+            self.offset = fh.read_u32_le()
+            self.size_compressed = fh.read_u32_le()
+            self.size_original = fh.read_u32_le()
+        self.type            ^= (self.hash & 0xff)
+        self.offset          ^= (self.hash & 0xffffffff)
+        self.size_compressed ^= (self.hash & 0xffffffff)
+        self.size_original   ^= (self.hash & 0xffffffff)
+
+    def write(self, fh):
+        hash            = self.hash
+        type            = self.type            ^ (hash & 0xff)
+        offset          = self.offset          ^ (hash & 0xffffffff)
+        size_compressed = self.size_compressed ^ (hash & 0xffffffff)
+        size_original   = self.size_original   ^ (hash & 0xffffffff)
+        if VERSION == 1:
+            fh.write_u32_be(hash)
+            fh.write_u8(type)
+            fh.write_u32_be(offset)
+            fh.write_u32_be(size_compressed)
+            fh.write_u32_be(size_original)
+        else:
+            fh.write_u64_le(hash)
+            fh.write_u8(type)
+            fh.write_u32_le(offset)
+            fh.write_u32_le(size_compressed)
+            fh.write_u32_le(size_original)
+
+    def __len__(self):
+        if VERSION == 1:
+            return 4+1+4+4+4
+        else:
+            return 8+1+4+4+4
+
+def save(target_path, buffer):
+    target_folder = os.path.dirname(target_path)
+    if not os.path.exists(target_folder):
+        os.makedirs(target_folder)
+
+    print('Saving to %s...' % target_path)
+    with open(target_path, 'wb') as target_file:
+        target_file.write(buffer)
+
+def transform_entry(entry, file_name):
+    file_name = file_name.encode('sjis')
+    entry.offset          ^= file_name[len(file_name) >> 1]
+    entry.size_compressed ^= file_name[len(file_name) >> 2]
+    entry.size_original   ^= file_name[len(file_name) >> 3]
+    return entry
+
+def transform_content(buffer, file_name, limit):
+    file_name = file_name.encode('sjis')
+    block_len = math.floor(limit / len(file_name))
+    buffer = bytearray(buffer)
+    pos = 0
+    for j in range(len(file_name) - 1):
+        for k in range(block_len):
+            buffer[pos] ^= file_name[j]
+            pos += 1
+    return buffer
+
+def unpack_entry(source_file, entry_num, entry, target_folder, file_names):
+    if entry.type == TableEntry.TYPE_COMPRESSED:
+        with source_file.peek(entry.offset):
+            buffer = source_file.read(entry.size_compressed)
+
+            if SCRIPT_HASH:
+                xor = (entry.hash ^ SCRIPT_HASH) & 0xffffffff
+                result = b''
+                for _ in range(math.floor(entry.size_compressed / 4)):
+                    result += struct.pack('<I', struct.unpack('<I', buffer[0:4])[0] ^ xor)
+                    buffer = buffer[4:]
+                result += buffer
+                buffer = result
+            buffer = zlib.decompress(buffer)
+            target_path = os.path.join(target_folder, '%05d.script' % entry_num)
+            save(target_path, buffer)
+    else:
+        if entry.hash not in file_names:
+            raise ValueError('Hash %x not found' % entry.hash)
+
+        file_name = file_names[entry.hash]
+        entry = transform_entry(entry, file_name)
+
+        target_path = os.path.join(target_folder, file_name)
+        if not os.path.exists(target_path):
+            with source_file.peek(entry.offset):
+                buffer = source_file.read(entry.size_compressed)
+
+                if entry.type == TableEntry.TYPE_OBFUSCATED:
+                    buffer = transform_content(buffer, file_name, entry.size_compressed)
+
+                save(target_path, buffer)
+        else:
+            print(target_path)
+
+def unpack(file_path, target_folder, file_names):
+    with open_ext(file_path, 'rb') as source_file:
+        table = Table()
+        table.read(source_file)
+        for entry_num, entry in enumerate(table.entries):
+            try:
+                unpack_entry(source_file, entry_num, entry, target_folder, file_names)
+            except Exception as e:
+                print(e)
+
+def pack(source_folder, file_path):
+    source_paths = [os.path.join(dp, f) for dp, dn, fn in os.walk(source_folder) for f in fn]
+    with open_ext(file_path, 'w+b') as target_file:
+        table = Table()
+        table.entries = [TableEntry() for _ in source_paths]
+
+        target_file.write(b"\x00" * len(table))
+
+        for entry_num, source_path in enumerate(source_paths):
+            file_name = os.path.relpath(source_path, source_folder)
+
+            entry = table.entries[entry_num]
+            entry.hash = hash(file_name.encode('sjis'))
+            entry.type = TableEntry.TYPE_PLAIN
+            entry.offset = target_file.tell()
+            entry.size_original = os.path.getsize(source_path)
+            entry.size_compressed = entry.size_original
+            entry = transform_entry(entry, file_name)
+
+            table.entries[entry_num] = entry
+            with open(source_path, 'rb') as source_file:
+                target_file.write(source_file.read())
+
+        target_file.seek(0)
+        table.write(target_file)
+
+def main():
+    parser = argparse.ArgumentParser(description='Converts NVSG to PNG and vice versa')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('-u', '--unpack', action='store_true', help='extracts files from .dat archive')
+    group.add_argument('-p', '--pack', action='store_true', help='packs files to .dat archive')
+    parser.add_argument('input', default=sys.stdin)
+    parser.add_argument('output', default=sys.stdin)
+    parser.add_argument('--filenames', help='used for extracting non-scripts')
+    result = parser.parse_args()
+    if result.unpack:
+        if not result.filenames:
+            file_names = []
+        else:
+            file_names = dict((hash(line.strip().encode('sjis')), line.strip()) for line in open(result.filenames))
+        unpack(result.input, result.output, file_names)
+    elif result.pack:
+        pack(result.input, result.output)
+
+if __name__ == '__main__':
+    main()
