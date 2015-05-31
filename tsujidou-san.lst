@@ -1351,6 +1351,7 @@ mask/FadeSpeedRightUp.png
 mask/FadeSpeedUp.png
 mask/FadeSquareIn.png
 mask/FadeSquareOut.png
+script/0.txt
 se/SE_001.ogg
 se/SE_002.ogg
 se/SE_003.ogg
@@ -7515,7 +7516,6 @@ sys/mode/bar.tlg
 sys/mode/bar0.tlg
 sys/mode/btn.tlg
 sys/mode/cgframe.tlg
-sys/mode/rpframe.tlg
 sys/mode/cglist.csv
 sys/mode/cgmode.tlg
 sys/mode/cgno.tlg
@@ -7544,6 +7544,7 @@ sys/mode/player/rewind.tlg
 sys/mode/player/seek.tlg
 sys/mode/player/stop.tlg
 sys/mode/prev.tlg
+sys/mode/rpframe.tlg
 sys/mode/rplist.csv
 sys/mode/rpmode.tlg
 sys/mode/rpno.tlg
