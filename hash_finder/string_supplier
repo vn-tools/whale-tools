@@ -1,0 +1,27 @@
+#!/usr/bin/python3
+import itertools
+import sys
+def bruteforce(charset, length):
+    return itertools.product(charset, repeat=length)
+
+prefixes = ['', 'vo/', 'sys/mode/cg/', 'script/', 'scripts/']
+suffixes = ['', '.tlg', '.dat', '.png', '.txt']
+suffixes = ['.ogg']
+prefixes = ['']
+
+def infix_generator():
+    for h in bruteforce(list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-'), 2):
+        for c in list('ABCDEFGHIJKLMNOPQRSTUVWXYZ'):
+            for j in [603, 602, 601, 303, 302, 301, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]:
+                for i in range(200):
+                    yield 'vo/%03d/S%03d_%c_%04d%s' % (j, j, c, i, h)
+    for x in open('strings.lst', 'r'):
+        yield x.strip()
+    for x in bruteforce(list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-'), 1):
+        yield ''.join(x)
+
+for suffix in suffixes:
+    suffix += "\n"
+    for prefix in prefixes:
+        for infix in infix_generator():
+            sys.stdout.buffer.write((prefix + infix + suffix).encode('sjis'))
